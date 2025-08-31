@@ -2,10 +2,13 @@ import streamlit as st
 import pandas as pd
 from sklearn.model_selection import train_test_split
 from sklearn.linear_model import LinearRegression
-from sklearn.preprocessing import LabelEncoder
+from sklearn.preprocessing import OneHotEncoder, StandardScaler
+from sklearn.compose import ColumnTransformer
+from sklearn.pipeline import Pipeline
+from sklearn.metrics import mean_absolute_error, r2_score
 
 # ==========================
-# Futuristic CSS Styling
+# Futuristic CSS Styling (UNCHANGED)
 # ==========================
 st.markdown("""
 <style>
@@ -73,14 +76,10 @@ if uploaded_file:
     # --------------------------
     # AUTO DATA CLEANING
     # --------------------------
-    # Drop useless columns (like IDs, names)
     drop_cols = [col for col in df.columns if "id" in col.lower() or "name" in col.lower()]
     df.drop(columns=drop_cols, inplace=True, errors="ignore")
-
-    # Drop completely empty columns
     df.dropna(axis=1, how="all", inplace=True)
 
-    # Fill missing values
     for col in df.columns:
         if df[col].dtype in ["int64", "float64"]:
             df[col].fillna(df[col].mean(), inplace=True)
@@ -89,7 +88,6 @@ if uploaded_file:
 
     # Detect exam score column
     possible_targets = [col for col in df.columns if any(word in col.lower() for word in ["exam", "score", "marks", "result", "grade"])]
-    target_col = None
     if len(possible_targets) == 1:
         target_col = possible_targets[0]
         st.info(f"🕵️ Detected exam score column: **{target_col}**")
@@ -98,23 +96,39 @@ if uploaded_file:
     else:
         target_col = st.selectbox("❓ Couldn’t detect automatically. Please choose exam score column:", df.columns)
 
-    # Features and target
     X = df.drop(columns=[target_col])
     y = df[target_col]
 
-    # Encode text columns
-    encoders = {}
-    for col in X.columns:
-        if X[col].dtype == "object":
-            encoders[col] = LabelEncoder()
-            X[col] = encoders[col].fit_transform(X[col].astype(str))
+    # Identify categorical and numeric features
+    categorical_cols = [c for c in X.columns if X[c].dtype == "object"]
+    numeric_cols = [c for c in X.columns if X[c].dtype in ["int64", "float64"]]
 
-    # Train model
-    model = LinearRegression()
+    # Preprocessor: OneHotEncode categorical + Scale numeric
+    preprocessor = ColumnTransformer(
+        transformers=[
+            ("num", StandardScaler(), numeric_cols),
+            ("cat", OneHotEncoder(handle_unknown="ignore"), categorical_cols)
+        ]
+    )
+
+    # Pipeline: preprocessing + regression
+    model = Pipeline(steps=[
+        ("preprocessor", preprocessor),
+        ("regressor", LinearRegression())
+    ])
+
+    # Train-test split
     X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
     model.fit(X_train, y_train)
 
+    # Evaluate model
+    y_pred = model.predict(X_test)
+    r2 = r2_score(y_test, y_pred)
+    mae = mean_absolute_error(y_test, y_pred)
+
     st.success("🤖 Model trained successfully!")
+    st.write(f"📊 **R² Score:** {r2:.3f}")
+    st.write(f"📊 **Mean Absolute Error (MAE):** {mae:.2f}")
 
     # ==========================
     # User-friendly Input Form
@@ -123,20 +137,17 @@ if uploaded_file:
 
     input_data = {}
     for col in X.columns:
-        if col in encoders:  # categorical
-            options = encoders[col].classes_
-            choice = st.selectbox(f"{col}", options)
-            input_data[col] = encoders[col].transform([choice])[0]
-        else:  # numeric
+        if col in categorical_cols:
+            choice = st.selectbox(f"{col}", df[col].unique())
+            input_data[col] = choice
+        else:
             min_val = int(df[col].min())
             max_val = int(df[col].max())
             val = st.slider(f"{col}", min_val, max_val, int(df[col].mean()))
             input_data[col] = val
 
-    # ==========================
-    # Predict
-    # ==========================
     if st.button("✨ Predict Exam Score"):
         input_df = pd.DataFrame([input_data])
         prediction = model.predict(input_df)[0]
-        st.success(f"📘 Predicted Exam Score: **{prediction:.2f}** / 100")
+        max_score = df[target_col].max()
+        st.success(f"📘 Predicted Exam Score: **{prediction:.2f}** / {max_score}")
